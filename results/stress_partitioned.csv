@@ -1,0 +1,2 @@
+scenario,scheduler,policy,duration,nominal_utilization,jobs_released,jobs_completed,deadline_misses,preemptions,cache_hits,cache_misses,cross_task_evictions,crpd_cycles,analytic_crpd_bound,busy_cycles,idle_cycles,average_response_time,max_response_time
+stress,edf,partitioned,352,0.865260,54,45,8,22,252,16,0,0,0,332,20,10.755556,75
