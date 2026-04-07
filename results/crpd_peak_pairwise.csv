@@ -1,0 +1,4 @@
+scenario,scheduler,policy,victim_task,source_task,evictions_while_preempted,attributed_crpd_cycles
+crpd_peak,edf,shared,T_irq,T_map,1,0
+crpd_peak,edf,shared,T_vision,T_irq,2,12
+crpd_peak,edf,shared,T_vision,T_map,4,24

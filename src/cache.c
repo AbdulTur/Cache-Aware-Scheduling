@@ -121,6 +121,51 @@ static int choose_set(const CacheState *cache, const TaskSpec *task, int physica
     return nth_set_from_mask(mask, ordinal);
 }
 
+static CacheAccessResult install_line(
+    CacheState *cache,
+    const TaskSpec *task,
+    int physical_line
+) {
+    int set_index = choose_set(cache, task, physical_line);
+    int way;
+    int victim = -1;
+    uint64_t oldest_tick = ULLONG_MAX;
+    CacheAccessResult result = {
+        .hit = false,
+        .evicted_owner = -1,
+        .evicted_physical_line = -1
+    };
+
+    for (way = 0; way < cache->config.ways; ++way) {
+        CacheEntry *entry = &cache->entries[set_index][way];
+
+        if (!entry->valid) {
+            victim = way;
+            break;
+        }
+        if (entry->last_touch < oldest_tick) {
+            oldest_tick = entry->last_touch;
+            victim = way;
+        }
+    }
+
+    if (victim >= 0) {
+        CacheEntry *entry = &cache->entries[set_index][victim];
+
+        if (entry->valid && entry->owner_task_id != task->id) {
+            ++cache->cross_task_evictions;
+            result.evicted_owner = entry->owner_task_id;
+            result.evicted_physical_line = entry->physical_line;
+        }
+        entry->valid = true;
+        entry->owner_task_id = task->id;
+        entry->physical_line = physical_line;
+        entry->last_touch = cache->tick;
+    }
+
+    return result;
+}
+
 bool cache_init(CacheState *cache, const Scenario *scenario, CachePolicyKind policy) {
     int task_index;
 
@@ -174,9 +219,11 @@ bool cache_is_resident(const CacheState *cache, int task_id, int physical_line) 
 CacheAccessResult cache_access(CacheState *cache, const TaskSpec *task, int physical_line) {
     int set_index = choose_set(cache, task, physical_line);
     int way;
-    int victim = -1;
-    uint64_t oldest_tick = ULLONG_MAX;
-    CacheAccessResult result = { .hit = false, .evicted_owner = -1 };
+    CacheAccessResult result = {
+        .hit = false,
+        .evicted_owner = -1,
+        .evicted_physical_line = -1
+    };
 
     ++cache->tick;
 
@@ -191,31 +238,29 @@ CacheAccessResult cache_access(CacheState *cache, const TaskSpec *task, int phys
         }
     }
 
-    for (way = 0; way < cache->config.ways; ++way) {
-        CacheEntry *entry = &cache->entries[set_index][way];
-        if (!entry->valid) {
-            victim = way;
-            break;
-        }
-        if (entry->last_touch < oldest_tick) {
-            oldest_tick = entry->last_touch;
-            victim = way;
-        }
-    }
-
-    if (victim >= 0) {
-        CacheEntry *entry = &cache->entries[set_index][victim];
-        if (entry->valid && entry->owner_task_id != task->id) {
-            ++cache->cross_task_evictions;
-            result.evicted_owner = entry->owner_task_id;
-        }
-        entry->valid = true;
-        entry->owner_task_id = task->id;
-        entry->physical_line = physical_line;
-        entry->last_touch = cache->tick;
-    }
+    result = install_line(cache, task, physical_line);
 
     return result;
+}
+
+CacheAccessResult cache_reload_line(
+    CacheState *cache,
+    const TaskSpec *task,
+    int physical_line
+) {
+    CacheAccessResult result = {
+        .hit = false,
+        .evicted_owner = -1,
+        .evicted_physical_line = -1
+    };
+
+    if (cache_is_resident(cache, task->id, physical_line)) {
+        result.hit = true;
+        return result;
+    }
+
+    ++cache->tick;
+    return install_line(cache, task, physical_line);
 }
 
 uint64_t cache_overlap_mask(const CacheState *cache, int task_a, int task_b) {

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -12,7 +13,7 @@ BUILD_DIR = ROOT / "build"
 RESULTS_DIR = ROOT / "results"
 OUTPUT_CSV = RESULTS_DIR / "experiment_results.csv"
 
-SCENARIOS = ["demo", "harmonic", "stress"]
+SCENARIOS = ["demo", "harmonic", "stress", "sched_compare", "crpd_peak"]
 SCHEDULERS = ["rms", "edf"]
 POLICIES = ["shared", "partitioned", "colored"]
 
@@ -36,8 +37,59 @@ def find_binary() -> Path:
     )
 
 
-def run_once(scenario: str, scheduler: str, policy: str) -> dict[str, str]:
-    binary = find_binary()
+def to_wsl_path(path: Path) -> str:
+    raw = str(path)
+    prefix = "\\\\wsl.localhost\\Ubuntu"
+
+    if raw.startswith(prefix):
+        return raw[len(prefix):].replace("\\", "/")
+
+    completed = subprocess.run(
+        ["wsl", "wslpath", "-a", raw],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout.strip()
+
+
+def run_command(
+    binary: Path,
+    scenario: str,
+    scheduler: str,
+    policy: str,
+    extra_args: list[str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    extra_args = extra_args or []
+    if os.name == "nt" and binary.suffix.lower() != ".exe":
+        root_wsl = to_wsl_path(ROOT)
+        binary_wsl = to_wsl_path(binary)
+        extra_parts = " ".join(shlex.quote(arg) for arg in extra_args)
+        command = [
+            "wsl",
+            "bash",
+            "-lc",
+            "cd "
+            + shlex.quote(root_wsl)
+            + " && "
+            + shlex.quote(binary_wsl)
+            + " --scenario "
+            + shlex.quote(scenario)
+            + " --scheduler "
+            + shlex.quote(scheduler)
+            + " --policy "
+            + shlex.quote(policy)
+            + " --summary-csv -"
+            + (" " + extra_parts if extra_parts else ""),
+        ]
+        return subprocess.run(
+            command,
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
     command = [
         str(binary),
         "--scenario",
@@ -48,14 +100,19 @@ def run_once(scenario: str, scheduler: str, policy: str) -> dict[str, str]:
         policy,
         "--summary-csv",
         "-",
-    ]
-    completed = subprocess.run(
+    ] + extra_args
+    return subprocess.run(
         command,
         cwd=ROOT,
         check=True,
         capture_output=True,
         text=True,
     )
+
+
+def run_once(scenario: str, scheduler: str, policy: str) -> dict[str, str]:
+    binary = find_binary()
+    completed = run_command(binary, scenario, scheduler, policy)
 
     summary_csv = completed.stdout.splitlines()[-2:]
     reader = csv.DictReader(io.StringIO("\n".join(summary_csv)))

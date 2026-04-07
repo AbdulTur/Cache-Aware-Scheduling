@@ -17,6 +17,8 @@ typedef struct {
     uint64_t crpd_cycles;
     uint64_t total_response_time;
     int max_response_time;
+    uint64_t crpd_from_task[MAX_TASKS];
+    uint64_t evicted_while_preempted_by_task[MAX_TASKS];
 } TaskSummary;
 
 typedef struct {
@@ -25,7 +27,8 @@ typedef struct {
     const char *policy_name;
     const char *description;
     int duration;
-    double nominal_utilization;
+    double base_access_utilization;
+    double isolated_cold_wcet_utilization;
     uint64_t jobs_released;
     uint64_t jobs_completed;
     uint64_t deadline_misses;
@@ -57,6 +60,10 @@ bool run_simulation(
 
 void print_summary(const SimulationSummary *summary, FILE *stream);
 bool write_summary_csv(
+    const SimulationSummary *summary,
+    const char *path
+);
+bool write_pairwise_csv(
     const SimulationSummary *summary,
     const char *path
 );

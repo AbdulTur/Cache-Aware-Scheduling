@@ -9,6 +9,7 @@
 typedef struct {
     bool hit;
     int evicted_owner;
+    int evicted_physical_line;
 } CacheAccessResult;
 
 typedef struct {
@@ -41,6 +42,11 @@ bool cache_is_resident(
     int physical_line
 );
 CacheAccessResult cache_access(
+    CacheState *cache,
+    const TaskSpec *task,
+    int physical_line
+);
+CacheAccessResult cache_reload_line(
     CacheState *cache,
     const TaskSpec *task,
     int physical_line

@@ -32,6 +32,10 @@
 
 - Main results graphs
 - Demo trace screenshot or short walkthrough
+- Worst-case CRPD versus max response-time comparison
+- Separate slide noting that `crpd_peak` is intentionally overloaded
+- Brief explanation of base access utilization versus isolated cold-WCET utilization
+- Pairwise CRPD attribution and sensitivity-sweep highlights
 
 ## Slides 11-12
 

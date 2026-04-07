@@ -1,5 +1,6 @@
 #include "simulator.h"
 
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -10,6 +11,9 @@ static void print_usage(const char *program_name) {
     printf("  --policy <shared|partitioned|colored>  Cache policy (default: shared)\n");
     printf("  --trace-csv <path>     Write detailed trace CSV\n");
     printf("  --summary-csv <path>   Write one-run summary CSV, use - for stdout\n");
+    printf("  --pairwise-csv <path>  Write pairwise CRPD attribution CSV\n");
+    printf("  --miss-penalty <n>     Override cache miss penalty for the selected scenario\n");
+    printf("  --color-count <n>      Override cache color count for the selected scenario\n");
     printf("  --list-scenarios       Print built-in scenarios\n");
     printf("  --self-test            Run simulator validation checks\n");
     printf("  --help                 Show this help message\n");
@@ -21,6 +25,9 @@ int main(int argc, char **argv) {
     CachePolicyKind policy = CACHE_POLICY_SHARED;
     const char *trace_path = NULL;
     const char *summary_csv = NULL;
+    const char *pairwise_csv = NULL;
+    int miss_penalty_override = -1;
+    int color_count_override = -1;
     int i;
 
     for (i = 1; i < argc; ++i) {
@@ -70,6 +77,18 @@ int main(int argc, char **argv) {
             summary_csv = argv[++i];
             continue;
         }
+        if ((strcmp(argv[i], "--pairwise-csv") == 0) && (i + 1 < argc)) {
+            pairwise_csv = argv[++i];
+            continue;
+        }
+        if ((strcmp(argv[i], "--miss-penalty") == 0) && (i + 1 < argc)) {
+            miss_penalty_override = atoi(argv[++i]);
+            continue;
+        }
+        if ((strcmp(argv[i], "--color-count") == 0) && (i + 1 < argc)) {
+            color_count_override = atoi(argv[++i]);
+            continue;
+        }
 
         fprintf(stderr, "Unknown option: %s\n", argv[i]);
         print_usage(argv[0]);
@@ -79,8 +98,20 @@ int main(int argc, char **argv) {
     {
         SimulationOptions options;
         SimulationSummary summary;
+        Scenario scenario_override;
 
-        options.scenario = scenario;
+        if (miss_penalty_override > 0 || color_count_override > 0) {
+            scenario_override = *scenario;
+            if (miss_penalty_override > 0) {
+                scenario_override.cache.miss_penalty = miss_penalty_override;
+            }
+            if (color_count_override > 0) {
+                scenario_override.cache.color_count = color_count_override;
+            }
+            options.scenario = &scenario_override;
+        } else {
+            options.scenario = scenario;
+        }
         options.scheduler = scheduler;
         options.policy = policy;
         options.trace_path = trace_path;
@@ -93,6 +124,10 @@ int main(int argc, char **argv) {
         print_summary(&summary, stdout);
         if (!write_summary_csv(&summary, summary_csv)) {
             fprintf(stderr, "Failed to write summary CSV.\n");
+            return 1;
+        }
+        if (!write_pairwise_csv(&summary, pairwise_csv)) {
+            fprintf(stderr, "Failed to write pairwise CSV.\n");
             return 1;
         }
     }

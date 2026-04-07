@@ -16,6 +16,7 @@ typedef struct {
     int resume_penalty_remaining;
     int next_access_index;
     bool pending_reload[MAX_WORKING_SET];
+    int pending_reload_source_task[MAX_WORKING_SET];
     TaskSummary summary;
 } TaskRuntime;
 
@@ -84,7 +85,53 @@ static void reset_pending_reload(TaskRuntime *runtime) {
 
     for (line = 0; line < MAX_WORKING_SET; ++line) {
         runtime->pending_reload[line] = false;
+        runtime->pending_reload_source_task[line] = -1;
     }
+}
+
+static int local_line_for_physical(
+    const TaskSpec *task,
+    int physical_line
+) {
+    int local_line = physical_line - task->base_line;
+
+    if (local_line < 0 || local_line >= task->working_set_size) {
+        return -1;
+    }
+
+    return local_line;
+}
+
+static void record_preempted_eviction(
+    const Scenario *scenario,
+    TaskRuntime runtimes[MAX_TASKS],
+    int source_task_id,
+    const CacheAccessResult *access
+) {
+    int victim_local_line;
+    TaskRuntime *victim_runtime;
+    const TaskSpec *victim_task;
+
+    if (access == NULL || access->evicted_owner < 0 || access->evicted_physical_line < 0) {
+        return;
+    }
+
+    victim_runtime = &runtimes[access->evicted_owner];
+    victim_task = &scenario->tasks[access->evicted_owner];
+    victim_local_line = local_line_for_physical(victim_task, access->evicted_physical_line);
+
+    if (victim_local_line < 0 || !victim_runtime->was_preempted) {
+        return;
+    }
+    if (!victim_runtime->pending_reload[victim_local_line]) {
+        return;
+    }
+    if (victim_runtime->pending_reload_source_task[victim_local_line] >= 0) {
+        return;
+    }
+
+    victim_runtime->pending_reload_source_task[victim_local_line] = source_task_id;
+    victim_runtime->summary.evicted_while_preempted_by_task[source_task_id] += 1U;
 }
 
 static void start_new_job(const TaskSpec *task, TaskRuntime *runtime, int time_now) {
@@ -182,9 +229,11 @@ static void capture_preemption_snapshot(
 }
 
 static void apply_resume_penalty(
+    const Scenario *scenario,
     const TaskSpec *task,
     TaskRuntime *runtime,
-    const CacheState *cache
+    CacheState *cache,
+    TaskRuntime runtimes[MAX_TASKS]
 ) {
     int local_line;
     int lost_lines = 0;
@@ -198,9 +247,25 @@ static void apply_resume_penalty(
 
         if (runtime->pending_reload[local_line] &&
             !cache_is_resident(cache, task->id, physical_line)) {
+            CacheAccessResult reload;
+            int source_task_id;
+
             ++lost_lines;
+            source_task_id = runtime->pending_reload_source_task[local_line];
+            if (source_task_id >= 0) {
+                runtime->summary.crpd_from_task[source_task_id] +=
+                    (uint64_t) cache->config.miss_penalty;
+            }
+            reload = cache_reload_line(cache, task, physical_line);
+            record_preempted_eviction(
+                scenario,
+                runtimes,
+                task->id,
+                &reload
+            );
         }
         runtime->pending_reload[local_line] = false;
+        runtime->pending_reload_source_task[local_line] = -1;
     }
 
     runtime->resume_penalty_remaining = lost_lines * cache->config.miss_penalty;
@@ -209,9 +274,11 @@ static void apply_resume_penalty(
 }
 
 static void start_access(
+    const Scenario *scenario,
     const TaskSpec *task,
     TaskRuntime *runtime,
-    CacheState *cache
+    CacheState *cache,
+    TaskRuntime runtimes[MAX_TASKS]
 ) {
     int local_line = local_line_for_access(
         task,
@@ -220,6 +287,13 @@ static void start_access(
     );
     int physical_line = cache_physical_line(task, local_line);
     CacheAccessResult access = cache_access(cache, task, physical_line);
+
+    record_preempted_eviction(
+        scenario,
+        runtimes,
+        task->id,
+        &access
+    );
 
     if (access.hit) {
         runtime->remaining_access_cost = 1;
@@ -321,7 +395,10 @@ bool run_simulation(
     summary->policy_name = policy_name(options->policy);
     summary->description = options->scenario->description;
     summary->duration = options->scenario->duration;
-    summary->nominal_utilization = scenario_nominal_utilization(options->scenario);
+    summary->base_access_utilization =
+        scenario_base_access_utilization(options->scenario);
+    summary->isolated_cold_wcet_utilization =
+        scenario_isolated_cold_wcet_utilization(options->scenario);
     summary->task_count = options->scenario->task_count;
     summary->analytic_crpd_bound = estimate_crpd_bound(
         options->scenario,
@@ -381,7 +458,13 @@ bool run_simulation(
 
             if (!runtime->started) {
                 if (runtime->was_preempted) {
-                    apply_resume_penalty(task, runtime, &cache);
+                    apply_resume_penalty(
+                        options->scenario,
+                        task,
+                        runtime,
+                        &cache,
+                        runtimes
+                    );
                 }
                 runtime->started = true;
                 trace_event(trace, time_now, "dispatch", task->name, "start_or_resume");
@@ -394,7 +477,13 @@ bool run_simulation(
             }
 
             if (runtime->remaining_access_cost == 0) {
-                start_access(task, runtime, &cache);
+                start_access(
+                    options->scenario,
+                    task,
+                    runtime,
+                    &cache,
+                    runtimes
+                );
             }
 
             runtime->remaining_access_cost -= 1;
@@ -467,7 +556,10 @@ void print_summary(const SimulationSummary *summary, FILE *stream) {
     fprintf(stream, "Policy: %s\n", summary->policy_name);
     fprintf(stream, "Description: %s\n", summary->description);
     fprintf(stream, "Duration: %d cycles\n", summary->duration);
-    fprintf(stream, "Nominal utilization: %.3f\n", summary->nominal_utilization);
+    fprintf(stream, "Base access utilization: %.3f\n",
+        summary->base_access_utilization);
+    fprintf(stream, "Isolated cold WCET utilization: %.3f\n",
+        summary->isolated_cold_wcet_utilization);
     fprintf(stream, "Jobs released/completed: %llu/%llu\n",
         (unsigned long long) summary->jobs_released,
         (unsigned long long) summary->jobs_completed);
@@ -521,14 +613,15 @@ bool write_summary_csv(const SimulationSummary *summary, const char *path) {
     }
 
     fprintf(stream,
-        "scenario,scheduler,policy,duration,nominal_utilization,jobs_released,jobs_completed,deadline_misses,preemptions,cache_hits,cache_misses,cross_task_evictions,crpd_cycles,analytic_crpd_bound,busy_cycles,idle_cycles,average_response_time,max_response_time\n");
+        "scenario,scheduler,policy,duration,base_access_utilization,isolated_cold_wcet_utilization,jobs_released,jobs_completed,deadline_misses,preemptions,cache_hits,cache_misses,cross_task_evictions,crpd_cycles,analytic_crpd_bound,busy_cycles,idle_cycles,average_response_time,max_response_time\n");
     fprintf(stream,
-        "%s,%s,%s,%d,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.6f,%d\n",
+        "%s,%s,%s,%d,%.6f,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.6f,%d\n",
         summary->scenario_name,
         summary->scheduler_name,
         summary->policy_name,
         summary->duration,
-        summary->nominal_utilization,
+        summary->base_access_utilization,
+        summary->isolated_cold_wcet_utilization,
         (unsigned long long) summary->jobs_released,
         (unsigned long long) summary->jobs_completed,
         (unsigned long long) summary->deadline_misses,
@@ -542,6 +635,58 @@ bool write_summary_csv(const SimulationSummary *summary, const char *path) {
         (unsigned long long) summary->idle_cycles,
         summary->average_response_time,
         summary->max_response_time);
+
+    if (stream != stdout) {
+        fclose(stream);
+    }
+
+    return true;
+}
+
+bool write_pairwise_csv(const SimulationSummary *summary, const char *path) {
+    FILE *stream;
+    int victim;
+    int source;
+
+    if (path == NULL) {
+        return true;
+    }
+
+    if (strcmp(path, "-") == 0) {
+        stream = stdout;
+    } else {
+        stream = fopen(path, "w");
+        if (stream == NULL) {
+            return false;
+        }
+    }
+
+    fprintf(stream,
+        "scenario,scheduler,policy,victim_task,source_task,evictions_while_preempted,attributed_crpd_cycles\n");
+
+    for (victim = 0; victim < summary->task_count; ++victim) {
+        const TaskSummary *task = &summary->task_summaries[victim];
+
+        for (source = 0; source < summary->task_count; ++source) {
+            if (victim == source) {
+                continue;
+            }
+            if (task->evicted_while_preempted_by_task[source] == 0U &&
+                task->crpd_from_task[source] == 0U) {
+                continue;
+            }
+
+            fprintf(stream,
+                "%s,%s,%s,%s,%s,%llu,%llu\n",
+                summary->scenario_name,
+                summary->scheduler_name,
+                summary->policy_name,
+                task->name,
+                summary->task_summaries[source].name,
+                (unsigned long long) task->evicted_while_preempted_by_task[source],
+                (unsigned long long) task->crpd_from_task[source]);
+        }
+    }
 
     if (stream != stdout) {
         fclose(stream);
@@ -575,6 +720,10 @@ bool run_self_test(void) {
     SimulationSummary shared;
     SimulationSummary partitioned;
     SimulationSummary colored;
+    SimulationSummary compare_rms;
+    SimulationSummary compare_edf;
+    SimulationSummary compare_rms_partitioned;
+    SimulationSummary compare_edf_partitioned;
 
     if (!run_test_case("demo", SCHEDULER_RMS, CACHE_POLICY_SHARED, &shared)) {
         return false;
@@ -585,14 +734,54 @@ bool run_self_test(void) {
     if (!run_test_case("demo", SCHEDULER_RMS, CACHE_POLICY_COLORED, &colored)) {
         return false;
     }
-
-    if (shared.cross_task_evictions <= partitioned.cross_task_evictions) {
+    if (!run_test_case("sched_compare", SCHEDULER_RMS, CACHE_POLICY_SHARED, &compare_rms)) {
         return false;
     }
-    if (shared.crpd_cycles < partitioned.crpd_cycles) {
+    if (!run_test_case("sched_compare", SCHEDULER_EDF, CACHE_POLICY_SHARED, &compare_edf)) {
+        return false;
+    }
+    if (!run_test_case("sched_compare", SCHEDULER_RMS, CACHE_POLICY_PARTITIONED,
+        &compare_rms_partitioned)) {
+        return false;
+    }
+    if (!run_test_case("sched_compare", SCHEDULER_EDF, CACHE_POLICY_PARTITIONED,
+        &compare_edf_partitioned)) {
+        return false;
+    }
+
+    if (shared.cross_task_evictions <= colored.cross_task_evictions ||
+        colored.cross_task_evictions <= partitioned.cross_task_evictions) {
+        return false;
+    }
+    if (shared.crpd_cycles <= colored.crpd_cycles ||
+        colored.crpd_cycles < partitioned.crpd_cycles) {
+        return false;
+    }
+    if (partitioned.crpd_cycles != 0U) {
+        return false;
+    }
+    if (colored.cross_task_evictions == partitioned.cross_task_evictions &&
+        colored.cache_misses == partitioned.cache_misses) {
         return false;
     }
     if (colored.analytic_crpd_bound < colored.crpd_cycles) {
+        return false;
+    }
+    if (compare_rms_partitioned.deadline_misses != 0U ||
+        compare_edf_partitioned.deadline_misses != 0U) {
+        return false;
+    }
+    if (compare_rms.cross_task_evictions <= compare_rms_partitioned.cross_task_evictions ||
+        compare_edf.cross_task_evictions <= compare_edf_partitioned.cross_task_evictions) {
+        return false;
+    }
+    if (compare_rms.preemptions == compare_edf.preemptions &&
+        compare_rms.deadline_misses == compare_edf.deadline_misses &&
+        compare_rms.crpd_cycles == compare_edf.crpd_cycles &&
+        compare_rms.max_response_time == compare_edf.max_response_time &&
+        compare_rms_partitioned.preemptions == compare_edf_partitioned.preemptions &&
+        compare_rms_partitioned.max_response_time ==
+            compare_edf_partitioned.max_response_time) {
         return false;
     }
 

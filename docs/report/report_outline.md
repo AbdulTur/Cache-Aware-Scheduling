@@ -45,7 +45,13 @@
 - CRPD comparison graph
 - Deadline miss comparison graph
 - Cross-task eviction graph
+- Max response time graph
 - Discussion of worst-case interference pattern
+- Separate scheduler-comparison discussion for the non-overloaded scenario
+- Compare base access utilization against isolated cold-WCET utilization
+- Pairwise CRPD attribution heatmap
+- Miss-penalty sensitivity study
+- Timeline figure for one representative run
 
 ## 6. Discussion
 

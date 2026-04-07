@@ -28,6 +28,7 @@ typedef struct {
 
 const Scenario *find_scenario(const char *name);
 void print_scenarios(void);
-double scenario_nominal_utilization(const Scenario *scenario);
+double scenario_base_access_utilization(const Scenario *scenario);
+double scenario_isolated_cold_wcet_utilization(const Scenario *scenario);
 
 #endif

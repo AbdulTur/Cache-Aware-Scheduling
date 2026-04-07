@@ -77,9 +77,11 @@ Export one-run summary CSV:
 
 ## Built-In Scenarios
 
-- `demo`: three periodic tasks with intentional cache-set collisions
-- `harmonic`: four harmonic tasks for RMS versus EDF comparison
+- `demo`: three periodic tasks with partial color overlap and isolated partitions
+- `harmonic`: four harmonic tasks for scheduler and cache-policy comparison
 - `stress`: higher-interference task set that amplifies CRPD
+- `sched_compare`: non-harmonic scheduler-comparison workload with zero deadline misses in the isolated partitioned baseline
+- `crpd_peak`: overloaded non-harmonic workload for worst-case CRPD and scheduler stress
 
 ## Metrics Reported
 
@@ -112,6 +114,11 @@ Expected outputs:
 - `results/crpd_cycles.png`
 - `results/deadline_misses.png`
 - `results/cross_task_evictions.png`
+- `results/max_response_time.png`
+- `results/cache_sensitivity.csv`
+- `results/cache_sensitivity_crpd.png`
+- `results/cache_sensitivity_deadlines.png`
+- `results/cache_sensitivity_response.png`
 
 ## Model Notes
 
@@ -119,9 +126,37 @@ Expected outputs:
 - Each task job is represented as a sequence of memory accesses.
 - Each access costs one cycle on a cache hit and `1 + miss_penalty` cycles on a miss.
 - On preemption, the simulator snapshots the preempted task's resident cache lines.
-- Misses to lines that were resident before preemption are counted as CRPD when the task resumes.
+- On resume, the simulator charges CRPD for lost lines and reloads them before normal execution continues.
 - `partitioned` assigns disjoint cache-set regions to tasks.
-- `colored` assigns cache colors so tasks map into separate color classes.
+- `colored` assigns shared color classes so some tasks still contend inside a color while avoiding full-cache interference.
+- `base_access_utilization` reports raw access demand only.
+- `isolated_cold_wcet_utilization` reports a conservative cold-start, no-interference WCET load estimate.
+- Pairwise CRPD attribution can be exported with `--pairwise-csv` to identify which task caused reload cost for which victim.
+- `sched_compare` is intended for scheduler comparison under cache interference with a clean zero-deadline-miss isolated partitioned baseline.
+- `crpd_peak` is intentionally overloaded, so its deadline misses reflect both cache interference and infeasible demand.
+
+## Additional Analysis
+
+Export pairwise attribution for one run:
+
+```bash
+./build/cache_aware_scheduler --scenario sched_compare --scheduler rms --policy shared --pairwise-csv results/sched_compare_pairwise.csv
+python3 scripts/plot_pairwise.py results/sched_compare_pairwise.csv results/sched_compare_pairwise.png
+```
+
+Export a trace and render a timeline:
+
+```bash
+./build/cache_aware_scheduler --scenario sched_compare --scheduler rms --policy shared --trace-csv results/sched_compare_trace.csv
+python3 scripts/plot_timeline.py results/sched_compare_trace.csv results/sched_compare_timeline.png --title "Sched Compare Shared Timeline"
+```
+
+Run a miss-penalty sensitivity sweep:
+
+```bash
+python3 scripts/run_sensitivity.py
+python3 scripts/plot_sensitivity.py
+```
 
 ## Validation
 
@@ -131,7 +166,7 @@ Run the built-in self-test:
 ./build/cache_aware_scheduler --self-test
 ```
 
-The self-test checks that the shared-cache baseline produces more interference than the cache-isolated configurations on the `demo` scenario and that observed CRPD stays under the simulator's analytic bound for the colored case.
+The self-test checks that shared cache produces more interference than colored cache, colored produces more interference than partitioning on the `demo` scenario, partitioning eliminates observed CRPD there, and the `sched_compare` scenario has zero deadline misses in the partitioned baseline while still producing different RMS and EDF behavior.
 
 ## Known Limitations
 
