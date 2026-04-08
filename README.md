@@ -20,7 +20,6 @@ This project simulates periodic real-time workloads and studies how cache interf
 ├── src/
 ├── scripts/
 ├── results/
-└── docs/
 ```
 
 ## Requirements
@@ -29,7 +28,7 @@ This project simulates periodic real-time workloads and studies how cache interf
 - CMake 3.16+
 - Python 3.10+ with `numpy`, `pandas`, `matplotlib`
 
-The project was designed to work on WSL and native Windows. The simulator is standard C and does not depend on Linux-only APIs.
+The simulator core is standard C and does not depend on Linux-only APIs. The documented build and analysis workflow is strongest on WSL/Linux, while native Windows builds are also supported with an appropriate toolchain.
 
 ## Build Instructions
 
@@ -108,13 +107,16 @@ Generate plots:
 python3 scripts/plot_results.py
 ```
 
-Expected outputs:
+Expected outputs from the main sweep and plotting commands:
 
 - `results/experiment_results.csv`
 - `results/crpd_cycles.png`
 - `results/deadline_misses.png`
 - `results/cross_task_evictions.png`
 - `results/max_response_time.png`
+
+Additional outputs from the sensitivity workflow in `Additional Analysis`:
+
 - `results/cache_sensitivity.csv`
 - `results/cache_sensitivity_crpd.png`
 - `results/cache_sensitivity_deadlines.png`
